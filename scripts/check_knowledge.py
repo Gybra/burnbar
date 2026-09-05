@@ -116,7 +116,7 @@ def relative_links(root,p,text):
 def validate(root):
     root=Path(root).resolve(); errors=[]
     files=sorted(p for p in root.rglob('*.md') if not (set(p.relative_to(root).parts)&SKIP) and p.relative_to(root).parts[:2] != EXTERNAL_DOC_ROOT)
-    required_adapters = [root/'AGENTS.md', root/'CLAUDE.md', root/'vendor'/'AGENTS.md', root/'landing'/'AGENTS.md']
+    required_adapters = [root/'AGENTS.md', root/'vendor'/'AGENTS.md', root/'landing'/'AGENTS.md']
     for p in required_adapters:
         label=p.relative_to(root)
         if not p.exists(): errors.append(Issue(label,1,'required adapter file is missing'))

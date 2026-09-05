@@ -5,7 +5,8 @@ provider quota. It is a Gybra-owned MIT fork of
 [TokenBar](https://github.com/Nanako0129/TokenBar).
 
 This file is the source of truth for how work lands. `docs/knowledge/` is
-upstream history; do not treat it as current process.
+upstream history; do not treat it as current process. `.agent-local/` is
+gitignored machine-local notes and must not override this file.
 
 ## Network policy (non-negotiable)
 
