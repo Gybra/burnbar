@@ -263,9 +263,8 @@ struct PopoverView: View {
         // the previous account set and its answer is about accounts that are
         // no longer configured.
         //
-        // Same shape as the Discord value gates in `AppDelegate`: published
-        // state and the thing that authorises it have to move in the same
-        // turn, or one outlives the other.
+        // Published state and the thing that authorises it have to move in
+        // the same turn, or one outlives the other.
         .task(id: extraRootsGeneration) { await model.pollAgentUsage() }
         // The card's own trigger, deliberately not inside the quota poll. The
         // union range must cover every displayed client, not just the open tab,

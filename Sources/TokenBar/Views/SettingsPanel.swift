@@ -39,8 +39,8 @@ struct SettingsPanel: View {
 
     /// Present clients (used for the client tabs reorder/hide UI).
     /// nil until an accepted payload lands, which is DIFFERENT from a scan
-    /// that found nothing. Only the Discord picker distinguishes them; the
-    /// other readers below want "whatever is present right now" and flatten it.
+    /// that found nothing. Readers below want "whatever is present right now"
+    /// and flatten it.
     var presentClients: [String]?
 
     /// True while either initial request is still in flight. An empty client list

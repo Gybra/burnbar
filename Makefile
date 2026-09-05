@@ -35,7 +35,6 @@ selftest: build
 # difference a value can be keyed on to be one thing where the suite looks and
 # another where it ships. Three source scans were written against that class in
 # #146 and all three were escaped, because the gap is not in the source text.
-# See the constants in DiscordIPC.swift.
 #
 # Not a superset of `selftest`: assertions behind `#if DEBUG` do not exist in
 # release, so this run is the smaller one. Both are gates; neither replaces
