@@ -28,6 +28,7 @@ Quota needs tokens the CLIs already wrote:
 - Keychain `Claude Code-credentials` (`/usr/bin/security`)
 - `~/.claude/.credentials.json`
 - Codex / Grok / Google oauth files
+- `~/.pi/agent/auth.json` (`openai-codex` / `xai` OAuth) when those CLI files are absent
 - OpenCode Copilot token
 
 Refresh may **write back** a new access token to those same files. BurnBar does
