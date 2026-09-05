@@ -1024,6 +1024,7 @@ struct CodexCredentials {
     id_token: Option<String>,
     account_id: Option<String>,
     last_refresh: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
     auth_path: PathBuf,
     raw_json: Value,
     scope_slot: CredentialSlot,
@@ -1520,7 +1521,7 @@ pub async fn run(publication_generation: u64) -> AgentUsagePayload {
     if let Some(copilot) = copilot {
         agents.push(copilot);
     }
-    // Grok only appears when ~/.grok/auth.json has credentials.
+    // Grok only appears when ~/.grok/auth.json (or Pi xai OAuth) has credentials.
     if let Some(grok) = grok {
         agents.push(grok);
     }
@@ -1887,7 +1888,7 @@ async fn fetch_codex_inner() -> ProviderFetchOutcome {
             return ProviderFetchOutcome::Failure(ProviderFetchFailure::terminal(display));
         }
     };
-    let verified = if credentials_needs_refresh(loaded.last_refresh) {
+    let verified = if credentials_needs_refresh(&loaded) {
         refresh_codex_credentials(&loaded.auth_path).await
     } else {
         resolve_codex_cache_binding(&loaded)
@@ -2957,7 +2958,18 @@ async fn claude_header_snapshot(
 }
 
 fn load_codex_credentials() -> Result<CodexCredentials, String> {
-    load_codex_credentials_from(&codex_home().join("auth.json"))
+    let cli = codex_home().join("auth.json");
+    if cli.is_file() {
+        return load_codex_credentials_from(&cli);
+    }
+    if let Some(pi) = pi_agent_auth_json().filter(|path| path.is_file()) {
+        return load_codex_credentials_from(&pi);
+    }
+    Err("Codex auth.json not found. Run `codex` to log in.".to_string())
+}
+
+fn pi_agent_auth_json() -> Option<PathBuf> {
+    crate::user_home_dir().map(|home| home.join(".pi/agent/auth.json"))
 }
 
 fn load_codex_credentials_from(auth_path: &Path) -> Result<CodexCredentials, String> {
@@ -2974,6 +2986,10 @@ fn load_codex_credentials_from(auth_path: &Path) -> Result<CodexCredentials, Str
         return Err(
             "Codex is using API-key auth; OAuth usage limits require `codex login`.".to_string(),
         );
+    }
+
+    if let Some(credentials) = load_pi_codex_credentials(auth_path, &raw_json)? {
+        return Ok(credentials);
     }
 
     let tokens = raw_json
@@ -2996,6 +3012,7 @@ fn load_codex_credentials_from(auth_path: &Path) -> Result<CodexCredentials, Str
         id_token,
         account_id,
         last_refresh,
+        expires_at: None,
         auth_path: auth_path.to_path_buf(),
         raw_json,
         scope_slot: CredentialSlot {
@@ -3007,6 +3024,62 @@ fn load_codex_credentials_from(auth_path: &Path) -> Result<CodexCredentials, Str
             .map_err(|_| "Codex auth location cannot be scoped safely.".to_string())?,
         },
     })
+}
+
+fn load_pi_codex_credentials(
+    auth_path: &Path,
+    raw_json: &Value,
+) -> Result<Option<CodexCredentials>, String> {
+    if raw_json.get("tokens").is_some() {
+        return Ok(None);
+    }
+    let Some(entry) = raw_json.get("openai-codex").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    if entry.get("type").and_then(Value::as_str) != Some("oauth") {
+        return Ok(None);
+    }
+    let access_token = entry
+        .get("access")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| "Pi Codex OAuth entry has no access token.".to_string())?
+        .to_string();
+    let refresh_token = entry
+        .get("refresh")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string);
+    let account_id = entry
+        .get("accountId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let expires_at = entry
+        .get("expires")
+        .and_then(Value::as_i64)
+        .and_then(|ms| Utc.timestamp_millis_opt(ms).single());
+    Ok(Some(CodexCredentials {
+        access_token,
+        refresh_token,
+        id_token: None,
+        account_id,
+        last_refresh: None,
+        expires_at,
+        auth_path: auth_path.to_path_buf(),
+        raw_json: raw_json.clone(),
+        scope_slot: CredentialSlot {
+            semantic_source: "codex-auth-json",
+            canonical_location: agent_account_scope::canonical_file_location(
+                auth_path,
+                Some("openai-codex"),
+            )
+            .map_err(|_| "Codex auth location cannot be scoped safely.".to_string())?,
+        },
+    }))
 }
 
 /// Marker error for "no Claude credential is configured at all" (as opposed to a
@@ -3611,7 +3684,7 @@ where
     let pre_binding = resolve_codex_cache_binding_with(&credentials, refresh).map_err(|_| {
         ProviderFetchFailure::terminal("Codex account identity could not be verified.")
     })?;
-    if !credentials_needs_refresh(credentials.last_refresh) {
+    if !credentials_needs_refresh(&credentials) {
         return Ok((credentials, pre_binding));
     }
 
@@ -3641,6 +3714,11 @@ where
         id_token: string_key(response, "id_token", "idToken").or(credentials.id_token),
         account_id: credentials.account_id,
         last_refresh: Some(Utc::now()),
+        expires_at: json
+            .get("expires_in")
+            .and_then(Value::as_i64)
+            .map(|secs| Utc::now() + chrono::Duration::seconds(secs.max(0)))
+            .or(credentials.expires_at),
         auth_path: credentials.auth_path,
         raw_json: credentials.raw_json,
         scope_slot: credentials.scope_slot,
@@ -4316,6 +4394,11 @@ fn claude_keychain_account() -> Option<String> {
 fn save_codex_credentials(
     credentials: &CodexCredentials,
 ) -> Result<CodexCredentialWriteReceipt, String> {
+    if credentials.raw_json.get("openai-codex").is_some()
+        && credentials.raw_json.get("tokens").is_none()
+    {
+        return save_pi_codex_credentials(credentials);
+    }
     let expected_tokens = credentials
         .raw_json
         .get("tokens")
@@ -4356,6 +4439,51 @@ fn save_codex_credentials(
         serde_json::to_string_pretty(&raw).map_err(|e| format!("encode Codex auth.json: {}", e))?;
     atomic_write(&credentials.auth_path, &data)
         .map_err(|e| format!("save Codex auth.json: {}", e))?;
+    Ok(CodexCredentialWriteReceipt {
+        path: credentials.auth_path.clone(),
+        previous_root,
+        persisted_root: raw,
+    })
+}
+
+fn save_pi_codex_credentials(
+    credentials: &CodexCredentials,
+) -> Result<CodexCredentialWriteReceipt, String> {
+    let expected = credentials
+        .raw_json
+        .get("openai-codex")
+        .ok_or_else(|| "Pi Codex entry missing from the loaded credentials.".to_string())?;
+    let mut raw = load_codex_credentials_from(&credentials.auth_path)
+        .map_err(|e| format!("reload Pi auth.json before saving: {}", e))?
+        .raw_json;
+    let current = raw
+        .get("openai-codex")
+        .ok_or_else(|| "Pi Codex entry disappeared before saving.".to_string())?;
+    if current != expected {
+        return Err("Pi Codex credentials changed during refresh.".to_string());
+    }
+    let previous_root = raw.clone();
+    let entry = raw
+        .get_mut("openai-codex")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "Pi Codex entry is not an object while saving.".to_string())?;
+    entry.insert(
+        "access".to_string(),
+        Value::String(credentials.access_token.clone()),
+    );
+    if let Some(refresh_token) = &credentials.refresh_token {
+        entry.insert("refresh".to_string(), Value::String(refresh_token.clone()));
+    }
+    if let Some(expires_at) = credentials.expires_at {
+        entry.insert(
+            "expires".to_string(),
+            Value::Number(expires_at.timestamp_millis().into()),
+        );
+    }
+    let data =
+        serde_json::to_string_pretty(&raw).map_err(|e| format!("encode Pi auth.json: {}", e))?;
+    atomic_write(&credentials.auth_path, &data)
+        .map_err(|e| format!("save Pi auth.json: {}", e))?;
     Ok(CodexCredentialWriteReceipt {
         path: credentials.auth_path.clone(),
         previous_root,
@@ -5262,8 +5390,11 @@ fn claude_credentials_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".claude/.credentials.json"))
 }
 
-fn credentials_needs_refresh(last_refresh: Option<DateTime<Utc>>) -> bool {
-    let Some(last_refresh) = last_refresh else {
+fn credentials_needs_refresh(credentials: &CodexCredentials) -> bool {
+    if let Some(expires_at) = credentials.expires_at {
+        return Utc::now() + chrono::Duration::seconds(120) >= expires_at;
+    }
+    let Some(last_refresh) = credentials.last_refresh else {
         return true;
     };
     (Utc::now() - last_refresh).num_days() > 8
@@ -7273,6 +7404,7 @@ mod tests {
             id_token: None,
             account_id: None,
             last_refresh: None,
+            expires_at: None,
             auth_path: PathBuf::new(),
             raw_json: Value::Null,
             scope_slot: slot.clone(),
@@ -9168,6 +9300,73 @@ mod tests {
             .unwrap();
         let metadata = scope.metadata_bytes();
         (scope, path, old_scope, metadata, location)
+    }
+
+    #[test]
+    fn pi_codex_oauth_entry_loads_and_save_preserves_siblings() {
+        let dir = std::env::temp_dir().join(format!(
+            "tb_pi_codex_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        let expires = Utc::now().timestamp_millis() + 3_600_000;
+        fs::write(
+            &path,
+            serde_json::json!({
+                "xai": {"type":"oauth","access":"FAKE-XAI","refresh":"XR"},
+                "openai-codex": {
+                    "type":"oauth",
+                    "access":"PI-CODEX-ACCESS",
+                    "refresh":"PI-CODEX-REFRESH",
+                    "expires": expires,
+                    "accountId":"acct-1"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = load_codex_credentials_from(&path).unwrap();
+        assert_eq!(loaded.access_token, "PI-CODEX-ACCESS");
+        assert_eq!(loaded.refresh_token.as_deref(), Some("PI-CODEX-REFRESH"));
+        assert_eq!(loaded.account_id.as_deref(), Some("acct-1"));
+        assert!(
+            !credentials_needs_refresh(&loaded),
+            "unexpired Pi Codex token must not refresh immediately"
+        );
+        let mut next = loaded.clone();
+        next.access_token = "NEW-ACCESS".into();
+        save_codex_credentials(&next).unwrap();
+        let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["xai"]["access"], "FAKE-XAI");
+        assert_eq!(saved["openai-codex"]["access"], "NEW-ACCESS");
+        assert_eq!(saved["openai-codex"]["type"], "oauth");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pi_codex_non_oauth_entry_is_not_loaded() {
+        let dir = std::env::temp_dir().join(format!(
+            "tb_pi_codex_key_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        fs::write(
+            &path,
+            r#"{"openai-codex":{"type":"api_key","key":"FAKE"}}"#,
+        )
+        .unwrap();
+        let err = load_codex_credentials_from(&path).unwrap_err();
+        assert!(
+            err.contains("no OAuth tokens"),
+            "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     async fn run_codex_refresh<R: RefreshScopeTransaction + ?Sized>(
@@ -11447,6 +11646,7 @@ mod tests {
             id_token: None,
             account_id: account_id.map(str::to_string),
             last_refresh: None,
+            expires_at: None,
             auth_path: PathBuf::new(),
             raw_json: Value::Null,
             scope_slot: CredentialSlot {

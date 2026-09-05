@@ -16,6 +16,10 @@
 //! over a monthly period. The monthly call is best-effort with a short timeout:
 //! a failure or hang there never sinks the card when the weekly meter succeeded.
 //! Omit the card entirely when no Grok auth is on disk (same stance as Copilot).
+//!
+//! If Grok Build's auth.json is absent, fall back to Pi's `xai` OAuth entry in
+//! `~/.pi/agent/auth.json` (same auth.x.ai client). Refresh writes back to that
+//! same file and never touches sibling keys.
 
 use crate::agent_account_scope::{
     self, AccountScope, AccountScopeError, RefreshCheckpoint, RefreshScopeTransaction,
@@ -26,7 +30,9 @@ use crate::agent_usage::{
     AgentIdentity, ProviderCacheBinding, ProviderFetchFailure, RefreshTargetError,
     ResponseReadFailure, TransportErrorFacts, TransportPhase, UsageWindow,
 };
-use chrono::{DateTime, SecondsFormat, Utc};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
+use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use serde::Deserialize;
 use serde_json::{value::RawValue, Value};
 use std::fs;
@@ -70,6 +76,8 @@ const WEEKLY_WINDOW_KEY: &str = "billing.weekly.v1";
 /// saved selection is not.
 const WEEKLY_PACE_SERIES_KEY: &str = "billing.weekly.v2";
 const MONTHLY_WINDOW_KEY: &str = "billing.monthly.v1";
+/// Pi coding agent stores the same xAI OIDC login under this key.
+const PI_XAI_ENTRY_KEY: &str = "xai";
 
 pub(crate) struct GrokData {
     pub identity: Option<AgentIdentity>,
@@ -267,6 +275,7 @@ async fn fetch_with_credentials(
             |(credentials, account_scope, cache_binding)| async move {
                 let client = provider_http_client_builder()
                     .timeout(std::time::Duration::from_secs(30))
+                    .http1_only()
                     .build()
                     .map_err(|_| {
                         ProviderFetchFailure::terminal("Grok billing client could not be created.")
@@ -374,6 +383,7 @@ fn grok_response_failure(
 async fn fetch_monthly_best_effort(credentials: &GrokCredentials) -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(MONTHLY_TIMEOUT_SECS))
+        .http1_only()
         .build()
         .ok()?;
     let response = client
@@ -681,6 +691,7 @@ async fn request_refresh(
 ) -> Result<TokenResponse, ProviderFetchFailure> {
     let client = provider_http_client_builder()
         .timeout(std::time::Duration::from_secs(30))
+        .http1_only()
         .build()
         .map_err(|_| ProviderFetchFailure::terminal("Grok refresh client could not be created."))?;
     let form = [
@@ -871,7 +882,17 @@ fn grok_refresh_target_failure(error: RefreshTargetError) -> ProviderFetchFailur
 }
 
 fn load_credentials() -> Result<Option<GrokCredentials>, String> {
-    load_credentials_from(&grok_home().join("auth.json"))
+    if let Some(credentials) = load_credentials_from(&grok_home().join("auth.json"))? {
+        return Ok(Some(credentials));
+    }
+    let Some(pi_path) = pi_agent_auth_json() else {
+        return Ok(None);
+    };
+    load_credentials_entry_from(&pi_path, Some(PI_XAI_ENTRY_KEY))
+}
+
+fn pi_agent_auth_json() -> Option<PathBuf> {
+    crate::user_home_dir().map(|home| home.join(".pi/agent/auth.json"))
 }
 
 fn load_credentials_from(auth_path: &Path) -> Result<Option<GrokCredentials>, String> {
@@ -913,6 +934,9 @@ fn load_credentials_entry_from(
     // entry, treat it as no Grok auth on disk and omit the card silently — the
     // same stance as a missing auth.json.
     let selected = match expected_entry_key {
+        Some(expected) if expected == PI_XAI_ENTRY_KEY => map
+            .get(expected)
+            .map(|entry| (expected.to_string(), entry.clone())),
         Some(expected) if is_grok_auth_entry_key(expected) => map
             .get(expected)
             .map(|entry| (expected.to_string(), entry.clone())),
@@ -930,8 +954,15 @@ fn load_credentials_entry_from(
         .as_object()
         .ok_or_else(|| "Grok auth entry is not an object.".to_string())?;
 
-    let access_token = credential_token(obj, "key")?;
-    let refresh_token = credential_token(obj, "refresh_token")?;
+    if entry_key == PI_XAI_ENTRY_KEY
+        && obj.get("type").and_then(Value::as_str) != Some("oauth")
+    {
+        return Ok(None);
+    }
+
+    let (access_field, refresh_field) = grok_token_fields(&entry_key);
+    let access_token = credential_token(obj, access_field)?;
+    let refresh_token = credential_token(obj, refresh_field)?;
     if access_token.is_none() && refresh_token.is_none() {
         return Ok(None);
     }
@@ -940,7 +971,16 @@ fn load_credentials_entry_from(
         .get("oidc_client_id")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .or_else(|| client_id_from_entry_key(&entry_key))
+        .or_else(|| {
+            is_grok_auth_entry_key(&entry_key)
+                .then(|| client_id_from_entry_key(&entry_key))
+                .flatten()
+        })
+        .or_else(|| {
+            access_token
+                .as_deref()
+                .and_then(|token| jwt_string_claim(token, "client_id"))
+        })
         .unwrap_or_default();
 
     let email = obj
@@ -948,10 +988,7 @@ fn load_credentials_entry_from(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let expires_at = obj
-        .get("expires_at")
-        .and_then(|v| v.as_str())
-        .and_then(parse_timestamp);
+    let expires_at = grok_entry_expires(obj, &entry_key);
 
     Ok(Some(GrokCredentials {
         auth_path: auth_path.to_path_buf(),
@@ -985,6 +1022,43 @@ fn client_id_from_entry_key(key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn grok_token_fields(entry_key: &str) -> (&'static str, &'static str) {
+    if entry_key == PI_XAI_ENTRY_KEY {
+        ("access", "refresh")
+    } else {
+        ("key", "refresh_token")
+    }
+}
+
+fn grok_entry_expires(
+    obj: &serde_json::Map<String, Value>,
+    entry_key: &str,
+) -> Option<DateTime<Utc>> {
+    if entry_key == PI_XAI_ENTRY_KEY {
+        obj.get("expires")
+            .and_then(Value::as_i64)
+            .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
+    } else {
+        obj.get("expires_at")
+            .and_then(Value::as_str)
+            .and_then(parse_timestamp)
+    }
+}
+
+fn jwt_string_claim(access: &str, claim: &str) -> Option<String> {
+    jwt_payload(access)?
+        .get(claim)?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn jwt_payload(access: &str) -> Option<Value> {
+    let payload = access.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 fn read_grok_refresh_target(path: &Path) -> Result<Vec<u8>, RefreshTargetError> {
     fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -1010,8 +1084,10 @@ fn grok_current_target_root(
     let current_object = current_entry
         .as_object()
         .ok_or(RefreshTargetError::TargetMalformed)?;
-    credential_token(current_object, "key").map_err(|_| RefreshTargetError::TargetMalformed)?;
-    let refresh = credential_token(current_object, "refresh_token")
+    let (access_field, refresh_field) = grok_token_fields(&credentials.entry_key);
+    credential_token(current_object, access_field)
+        .map_err(|_| RefreshTargetError::TargetMalformed)?;
+    let refresh = credential_token(current_object, refresh_field)
         .map_err(|_| RefreshTargetError::TargetMalformed)?;
     // The loader accepts refresh-only entries; this transaction supplies the
     // missing access token, so only the trusted refresh marker is required.
@@ -1043,19 +1119,27 @@ fn encode_refreshed_grok_root(
         .and_then(|map| map.get_mut(&credentials.entry_key))
         .and_then(Value::as_object_mut)
         .ok_or(RefreshTargetError::TargetMalformed)?;
+    let (access_field, refresh_field) = grok_token_fields(&credentials.entry_key);
     entry.insert(
-        "key".to_string(),
+        access_field.to_string(),
         Value::String(credentials.access_token.clone()),
     );
     entry.insert(
-        "refresh_token".to_string(),
+        refresh_field.to_string(),
         Value::String(credentials.refresh_token.clone()),
     );
     if let Some(exp) = credentials.expires_at {
-        entry.insert(
-            "expires_at".to_string(),
-            Value::String(exp.to_rfc3339_opts(SecondsFormat::Millis, true)),
-        );
+        if credentials.entry_key == PI_XAI_ENTRY_KEY {
+            entry.insert(
+                "expires".to_string(),
+                Value::Number(exp.timestamp_millis().into()),
+            );
+        } else {
+            entry.insert(
+                "expires_at".to_string(),
+                Value::String(exp.to_rfc3339_opts(SecondsFormat::Millis, true)),
+            );
+        }
     }
     serde_json::to_vec_pretty(&current_root).map_err(|_| RefreshTargetError::Persistence)
 }
@@ -1879,6 +1963,86 @@ mod tests {
             loaded.is_none(),
             "a foreign-only auth.json must yield no Grok credentials, got {loaded:?}"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn fixture_jwt(client_id: &str) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"client_id":"{client_id}"}}"#));
+        format!("eyJhbGciOiJub25lIn0.{payload}.sig")
+    }
+
+    #[test]
+    fn pi_xai_oauth_entry_loads_and_ignores_siblings() {
+        let client = "b1a00492-073a-47ea-816f-4c329264a828";
+        let access = fixture_jwt(client);
+        let expires = Utc::now().timestamp_millis() + 3_600_000;
+        let json = serde_json::json!({
+            "opencode": { "type": "api_key", "key": "FAKE-OPENCODE" },
+            "openai-codex": {
+                "type": "oauth",
+                "access": "FAKE-CODEX",
+                "refresh": "FAKE-CODEX-R"
+            },
+            "xai": {
+                "type": "oauth",
+                "access": access,
+                "refresh": "FAKE-XAI-REFRESH",
+                "expires": expires
+            }
+        });
+        let (dir, path) = temp_auth_json("pi-xai", &json.to_string());
+        assert!(
+            load_credentials_from(&path).unwrap().is_none(),
+            "a Pi auth.json must not be scanned as Grok Build"
+        );
+        let loaded = load_credentials_entry_from(&path, Some(PI_XAI_ENTRY_KEY))
+            .unwrap()
+            .expect("Pi xai oauth should load");
+        assert_eq!(loaded.entry_key, PI_XAI_ENTRY_KEY);
+        assert_eq!(loaded.client_id, client);
+        assert_eq!(loaded.refresh_token, "FAKE-XAI-REFRESH");
+        assert_eq!(loaded.access_token, access);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pi_xai_api_key_entry_is_ignored() {
+        let (dir, path) = temp_auth_json(
+            "pi-xai-key",
+            r#"{ "xai": { "type": "api_key", "key": "FAKE-XAI-KEY" } }"#,
+        );
+        let loaded = load_credentials_entry_from(&path, Some(PI_XAI_ENTRY_KEY)).unwrap();
+        assert!(loaded.is_none(), "Pi xai api_key must not become Grok OAuth");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pi_xai_save_preserves_siblings_and_pi_field_names() {
+        let client = "b1a00492-073a-47ea-816f-4c329264a828";
+        let access = fixture_jwt(client);
+        let json = serde_json::json!({
+            "openai-codex": { "type": "oauth", "access": "FAKE-CODEX", "refresh": "R" },
+            "xai": {
+                "type": "oauth",
+                "access": access,
+                "refresh": "FAKE-XAI-REFRESH",
+                "expires": 1
+            }
+        });
+        let (dir, path) = temp_auth_json("pi-xai-save", &json.to_string());
+        let mut loaded = load_credentials_entry_from(&path, Some(PI_XAI_ENTRY_KEY))
+            .unwrap()
+            .unwrap();
+        loaded.access_token = "NEW-ACCESS".into();
+        loaded.refresh_token = "NEW-REFRESH".into();
+        loaded.expires_at = Some(Utc.timestamp_millis_opt(2_000).single().unwrap());
+        save_credentials(&loaded).unwrap();
+        let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["openai-codex"]["access"], "FAKE-CODEX");
+        assert_eq!(saved["xai"]["access"], "NEW-ACCESS");
+        assert_eq!(saved["xai"]["refresh"], "NEW-REFRESH");
+        assert_eq!(saved["xai"]["type"], "oauth");
+        assert!(saved["xai"].get("key").is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 
