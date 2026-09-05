@@ -320,7 +320,8 @@ final class TrayAnimator {
     }
 
     nonisolated static func animationLayerSpeed(load: Double) -> Double {
-        500.0 / Double(animationIntervalMilliseconds(load: load))
+        guard load > 0 else { return 0 }
+        return 500.0 / Double(animationIntervalMilliseconds(load: load))
     }
 
     nonisolated static func effectiveAnimationFPS(load: Double) -> Double {

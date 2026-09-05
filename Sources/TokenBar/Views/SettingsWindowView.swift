@@ -426,7 +426,10 @@ private struct MenuBarMock: View {
             if frames.isEmpty {
                 Image(systemName: "chart.bar.fill")
                     .font(.system(size: 12))
-            } else if animateTray {
+            } else if animateTray,
+                      TrayAnimator.effectiveAnimationFPS(
+                        load: TrayAnimator.animationLoad(
+                            tokensPerMinute: tokensPerMin ?? 0)) > 0 {
                 let interval = frameInterval
                 TimelineView(.periodic(from: .now, by: interval)) { timeline in
                     let index = Int(
@@ -440,8 +443,8 @@ private struct MenuBarMock: View {
         }
     }
 
-    /// animation.rs pacing, same as TrayAnimator: idle 2 fps, 1M tok/min
-    /// tops out at 40 fps.
+    /// animation.rs pacing, same as TrayAnimator: still at 0 tok/min, 1M
+    /// tok/min tops out at 40 fps.
     private var frameInterval: TimeInterval {
         let load = min((tokensPerMin ?? 0) / 10_000.0, 100.0)
         return 0.5 / max(1.0, load / 5.0)

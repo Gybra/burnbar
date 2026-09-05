@@ -1110,7 +1110,7 @@ enum SelfTest {
         let quantizedLoad = TrayAnimator.animationLoad(tokensPerMinute: 333_000)
         let fullLoad = TrayAnimator.animationLoad(tokensPerMinute: 1_000_000)
         let clampedLoad = TrayAnimator.animationLoad(tokensPerMinute: 2_000_000)
-        expect(TrayAnimator.effectiveAnimationFPS(load: idleLoad) == 2, "tray idle is 2 fps")
+        expect(TrayAnimator.effectiveAnimationFPS(load: idleLoad) == 0, "tray idle is still")
         expect(TrayAnimator.effectiveAnimationFPS(load: thresholdLoad) == 2, "tray 50K threshold is 2 fps")
         expect(TrayAnimator.effectiveAnimationFPS(load: mediumLoad) == 4, "tray 100K is 4 fps")
         expect(

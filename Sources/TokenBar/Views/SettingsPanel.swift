@@ -274,7 +274,7 @@ struct SettingsPanel: View {
                     + QuotaIconStyle.allCases.map { ($0.rawValue, $0.label) })
             if isAnimatedStyle {
                 toggleRow("Animate based on token usage", isOn: $animateTray)
-                hint("Spins faster as the live token rate climbs (idle 2 fps, 1M tokens/min tops out at 40 fps).")
+                hint("Spins faster as the live token rate climbs (still at 0 tok/min, 1M tokens/min tops out at 40 fps).")
             } else {
                 radioGroup(
                     selection: $iconColoringRaw,
