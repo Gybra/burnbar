@@ -400,6 +400,12 @@ private final class StatusItemRunnerLayer: CALayer {
 
     func setSpeed(_ speed: Float) {
         guard !frames.isEmpty else { return }
+        if speed <= 0 {
+            frameTimer?.cancel()
+            frameTimer = nil
+            frameInterval = 0
+            return
+        }
         let interval = 0.5 / Double(max(speed, 1))
         guard frameTimer == nil || abs(interval - frameInterval) > 0.000_001 else { return }
         frameInterval = interval
