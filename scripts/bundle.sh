@@ -25,7 +25,7 @@ touch "$OUT_DIR/.metadata_never_index"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/TokenBar "$APP/Contents/MacOS/TokenBar"
-cp -R .build/release/TokenBar_TokenBar.bundle "$APP/Contents/Resources/"
+cp -R .build/release/BurnBar_TokenBar.bundle "$APP/Contents/Resources/"
 cp -R Sources/TokenBar/Resources/Localizations/*.lproj "$APP/Contents/Resources/"
 if [ -f assets/icon.icns ]; then
   cp assets/icon.icns "$APP/Contents/Resources/icon.icns"

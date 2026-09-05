@@ -275,6 +275,7 @@ async fn fetch_with_credentials(
             |(credentials, account_scope, cache_binding)| async move {
                 let client = provider_http_client_builder()
                     .timeout(std::time::Duration::from_secs(30))
+                    .http1_only()
                     .build()
                     .map_err(|_| {
                         ProviderFetchFailure::terminal("Grok billing client could not be created.")
@@ -382,6 +383,7 @@ fn grok_response_failure(
 async fn fetch_monthly_best_effort(credentials: &GrokCredentials) -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(MONTHLY_TIMEOUT_SECS))
+        .http1_only()
         .build()
         .ok()?;
     let response = client
@@ -689,6 +691,7 @@ async fn request_refresh(
 ) -> Result<TokenResponse, ProviderFetchFailure> {
     let client = provider_http_client_builder()
         .timeout(std::time::Duration::from_secs(30))
+        .http1_only()
         .build()
         .map_err(|_| ProviderFetchFailure::terminal("Grok refresh client could not be created."))?;
     let form = [
