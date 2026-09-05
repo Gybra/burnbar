@@ -6,16 +6,12 @@ on:
 
 permissions:
   contents: write
-  actions: write   # the badge step dispatches update-install-count.yml
 
 jobs:
   release:
-    runs-on: macos-26
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          submodules: recursive
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -25,140 +21,15 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           BUILD=$(git rev-list --count HEAD)
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
           scripts/bundle.sh "$VERSION" "$BUILD"
 
       - name: Archive
-        run: |
-          tar -czf "TokenBar.app.tar.gz" -C dist "TokenBar.app"
-          shasum -a 256 "TokenBar.app.tar.gz" | awk '{print $1}' > sha256.txt
-          echo "SHA256=$(cat sha256.txt)" >> "$GITHUB_ENV"
+        run: tar -czf BurnBar.app.tar.gz -C dist BurnBar.app
 
-      # release-notes.txt: plain text for Sparkle/appcast/latest.json.
-      # release-notes.md: markdown for the GitHub release page, with PR
-      # links, contributor credit, and GitHub's New Contributors tail.
-      - name: Generate release notes
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/release_notes.sh
-
-      - name: Sign and build appcast
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: |
-          umask 077
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle_ed.key
-          scripts/make_appcast.sh "TokenBar.app.tar.gz" "$VERSION" "$GITHUB_REF_NAME" /tmp/sparkle_ed.key release-notes.txt
-          rm -f /tmp/sparkle_ed.key
-
-      # Tauri migration manifest: the old Tauri app's updater endpoint
-      # (github.com/Nanako0129/TokenBar/releases/latest/download/latest.json)
-      # now resolves to this repo. A stable release drops a Tauri-format
-      # latest.json signed with the same minisign updater key, so the Tauri
-      # app accepts the archive and swaps itself for the native build (same
-      # app name + bundle id, file-level replace). Stable only — prereleases
-      # are excluded from releases/latest, so they'd never serve this anyway.
-      - name: Tauri migration manifest (stable only)
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          npx --yes @tauri-apps/cli@latest signer sign \
-            -k "$TAURI_SIGNING_PRIVATE_KEY" "TokenBar.app.tar.gz" >/dev/null
-          SIG=$(cat TokenBar.app.tar.gz.sig)
-          NOTES_JSON=$(jq -Rs . < release-notes.txt)
-          PUB=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          URL="https://github.com/Nanako0129/TokenBar/releases/download/$GITHUB_REF_NAME/TokenBar.app.tar.gz"
-          jq -n --arg v "$VERSION" --argjson n "$NOTES_JSON" --arg p "$PUB" \
-            --arg s "$SIG" --arg u "$URL" \
-            '{version:$v, notes:$n, pub_date:$p,
-              platforms:{"darwin-aarch64":{signature:$s, url:$u}}}' > latest.json
-          echo "----- latest.json -----"; cat latest.json
-
-      - name: Create GitHub release
+      - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PRERELEASE_FLAG=""
-          ASSETS="TokenBar.app.tar.gz"
-          case "$VERSION" in
-            *-*) PRERELEASE_FLAG="--prerelease";;
-            *) ASSETS="$ASSETS latest.json";;  # Tauri migration manifest
-          esac
-          NOTES="release-notes.md"
-          [[ -s "$NOTES" ]] || NOTES="release-notes.txt"
-          gh release create "$GITHUB_REF_NAME" \
-            $ASSETS \
-            --title "TokenBar $VERSION" \
-            --notes-file "$NOTES" $PRERELEASE_FLAG
-
-      - name: Publish appcast to main
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          git add appcast.xml
-          git commit -m "chore(release): appcast for $GITHUB_REF_NAME" || exit 0
-          git push origin main
-
-      # `on: release` never fires downstream for GITHUB_TOKEN-created
-      # releases (recursion guard) — dispatch the badge refresh explicitly.
-      - name: Refresh install-count badge
-        # Non-critical chore — never let it gate the Homebrew cask bump below.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run update-install-count.yml --ref main
-
-      # Prereleases ship via the Sparkle beta channel only — no cask bump.
-      - name: Bump Homebrew cask (tokenbar)
-        if: ${{ !contains(github.ref_name, '-') }}
-        env:
-          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-        run: |
-          umask 077
-          printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > /tmp/tap_deploy_key
-          export GIT_SSH_COMMAND="ssh -i /tmp/tap_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-          git clone git@github.com:Nanako0129/homebrew-tokenbar.git /tmp/tap
-          cat > "/tmp/tap/Casks/tokenbar.rb" <<CASK
-          cask "tokenbar" do
-            version "$VERSION"
-            sha256 "$SHA256"
-
-            url "https://github.com/Nanako0129/TokenBar/releases/download/v#{version}/TokenBar.app.tar.gz"
-            name "TokenBar"
-            desc "Menubar dashboard for local AI token usage"
-            homepage "https://github.com/Nanako0129/TokenBar"
-
-            auto_updates true
-            depends_on macos: :sonoma
-            depends_on arch: :arm64
-
-            app "TokenBar.app"
-
-            postflight do
-              system_command "/usr/bin/xattr",
-                args: ["-dr", "com.apple.quarantine", "#{appdir}/TokenBar.app"]
-            end
-
-            zap trash: [
-              "~/Library/Application Support/com.nyanako.tokenbar",
-              "~/Library/Caches/com.nyanako.tokenbar",
-              "~/Library/Preferences/com.nyanako.tokenbar.plist",
-              "~/Library/Preferences/com.nyanako.tokenbar.beta.plist",
-            ]
-          end
-          CASK
-          cd /tmp/tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Casks
-          git commit -m "tokenbar $VERSION"
-          git push
-          rm -f /tmp/tap_deploy_key
+          gh release create "$GITHUB_REF_NAME" BurnBar.app.tar.gz \
+            --title "BurnBar ${GITHUB_REF_NAME#v}" \
+            --generate-notes

@@ -258,11 +258,7 @@ struct SettingsWindowView: View {
                 FooterLink(
                     title: "GitHub",
                     systemImage: "chevron.left.forwardslash.chevron.right",
-                    url: "https://github.com/Nanako0129/TokenBar")
-                FooterLink(
-                    title: "Sponsor",
-                    systemImage: "heart",
-                    url: "https://www.patreon.com/cw/Nanako0129/membership")
+                    url: "https://github.com/Gybra/burnbar")
             }
         }
         .padding(.horizontal, 6)

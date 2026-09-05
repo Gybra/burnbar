@@ -15,20 +15,7 @@ enum BetaMigration {
     private static let betaDomain = "com.nyanako.tokenbar.beta"
 
     static func runIfNeeded() {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: markerKey) else { return }
-        defaults.set(true, forKey: markerKey)
-
-        guard let beta = UserDefaults(suiteName: betaDomain) else { return }
-        var copied = 0
-        for (key, value) in beta.dictionaryRepresentation()
-        where key.hasPrefix("tokenbar.") && defaults.object(forKey: key) == nil {
-            defaults.set(value, forKey: key)
-            copied += 1
-        }
-        if copied > 0 {
-            NSLog("TokenBar: imported \(copied) settings from the beta app")
-        }
+        // BurnBar does not import TokenBar/beta preferences.
     }
 }
 

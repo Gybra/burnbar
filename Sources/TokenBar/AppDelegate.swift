@@ -73,7 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (non-default) data-refresh interval is honored this session instead of
         // staying at the pre-migration default until the next defaults write.
         refreshIntervalMin = AppDelegate.readIntervalMin()
-        _ = UpdaterService.shared // arm Sparkle when bundled
         // Record the timezone the (still empty) graph cache will be filled
         // under, before the title-refresh loop below starts warming it.
         AttributedSeriesModel.captureLaunchTimeZone()
@@ -135,16 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // status item's first render fights it for the main runloop turn.
         // Gated on the same demo/test arguments the connection is, so an
         // `--icon-gallery` or `--demo` run never interrupts with it.
-        if DiscordPresence.mayConnect(arguments: CommandLine.arguments, enabled: true) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                DiscordIntro.presentIfNeeded()
-            }
-        }
-        lastDiscordEnabled = DiscordPresence.enabled()
+        lastDiscordEnabled = false
         lastCostStyle = DiscordPresence.costStyle()
         lastComponents = DiscordPresence.components()
         lastSelection = DiscordPresence.selection()
-        applyDiscordPresence()
     }
 
     /// The one place a Discord connection can come into existence, and
@@ -371,7 +364,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // cannot recompute from its cached rate. Value-gate the extra fetch.
             let hiddenRaw = UserDefaults.standard.string(
                 forKey: ClientRegistry.tabHiddenKey) ?? ""
-            let previousHiddenRaw = self.lastHiddenRaw
             let hiddenChanged = hiddenRaw != self.lastHiddenRaw
             if hiddenChanged {
                 self.lastHiddenRaw = hiddenRaw
@@ -387,52 +379,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ClaudeExtraRoots.apply()
             }
 
-            // Hiding a client has to leave the published presence in the SAME
-            // turn — waiting for the next refresh cycle would keep that client
-            // on a public profile for up to five minutes. Value-gated on the
-            // same two raw values so an unrelated write does not re-publish.
-            let discordEnabled = DiscordPresence.enabled()
-            let costStyle = DiscordPresence.costStyle()
-            let previousCostStyle = self.lastCostStyle
-            let components = DiscordPresence.components()
-            let previousComponents = self.lastComponents
-            let selection = DiscordPresence.selection()
-            let previousSelection = self.lastSelection
-            if hiddenChanged || discordEnabled != self.lastDiscordEnabled
-                || costStyle != previousCostStyle || components != previousComponents
-                || selection != previousSelection {
-                // The classification decides only whether earlier queued work
-                // is stale, NOT how fast this reaches the wire. Every change
-                // waits out the publish floor; the Settings copy states that
-                // wait. What a reduction still buys is that a payload computed
-                // before it must not be written after it — that would put the
-                // client the user removed back on the profile rather than
-                // merely being slow.
-                // Today's actual contributors, so a hide of a client with no
-                // usage today is not mistaken for taking something down.
-                let contributors = self.lastGraph.map { graph in
-                    Set(graph.contributions.last { $0.date == Format.todayKey() }?
-                        .clients.map(\.client) ?? [])
-                }
-                let change = AppDelegate.visibilityChange(
-                    previousHiddenRaw: previousHiddenRaw, hiddenRaw: hiddenRaw,
-                    previousSelection: previousSelection, selection: selection,
-                    contributors: contributors)
-                    .combined(with: AppDelegate.costStyleChange(
-                        previous: previousCostStyle, current: costStyle,
-                        publishedInBoth: previousComponents.contains(.cost)
-                            && components.contains(.cost)))
-                    .combined(with: AppDelegate.componentsChange(
-                        previous: previousComponents, current: components))
-                    .combined(with: AppDelegate.selectionChange(
-                        previous: previousSelection, current: selection,
-                        hidden: ClientRegistry.parseIdSet(hiddenRaw)))
-                self.lastDiscordEnabled = discordEnabled
-                self.lastCostStyle = costStyle
-                self.lastComponents = components
-                self.lastSelection = selection
-                self.applyDiscordPresence(visibility: change)
-            }
         }
     }
 
@@ -458,35 +404,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the menu-bar item down cleanly (avoids the ~40s RunningBoard
         // "waiting on exit context" stall seen on the 2026-06-16 quit).
         statusController?.tearDown()
-        if let discord {
-            discord.stop()
-            // Waited on, not fired and forgotten: `stop()` queues the activity
-            // clear on the client's serial queue, and the process is gone
-            // moments after this method returns. Whether Discord reliably drops
-            // an activity when the socket just closes is unverified, so the
-            // clear is the mechanism and the close is the backstop, not the
-            // other way round.
-            //
-            // The wait is bounded on THIS side rather than trusting the
-            // client's own socket timeouts. `drainForTesting` is `queue.sync`,
-            // which waits for whatever that serial queue is already doing —
-            // possibly a `recv` or `send` sitting on its 2s timeout — and has
-            // no ceiling of its own. Quit is the wrong place to inherit
-            // someone else's worst case: the ~40s RunningBoard stall handled
-            // just below is what that looks like to a user. A local sub-KiB
-            // frame needs single-digit milliseconds, so 300ms is generous for
-            // the clear and cheap when Discord is gone.
-            //
-            // The name says "ForTesting" because the selftest is its other
-            // caller. This use is not a test; do not delete it as one.
-            let cleared = DispatchSemaphore(value: 0)
-            DispatchQueue.global(qos: .userInitiated).async {
-                discord.drainForTesting()
-                cleared.signal()
-            }
-            _ = cleared.wait(timeout: .now() + 0.3)
-        }
-
     }
 
     /// Re-derive every menu-bar surface from the cached data and the current
@@ -563,10 +480,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 guard !Task.isCancelled else { break }
                 self.applyMenuBarState()
-                // Republish on the same cadence the tray title refreshes on.
-                // The client coalesces an unchanged payload, so a cycle that
-                // moved no numbers costs nothing on the wire.
-                self.applyDiscordPresence()
                 // Wake at least as often as the force interval (so a short
                 // interval is honored) but never sleep longer than the 5-min
                 // cached-refresh cap (so graph titles don't lag a long interval).

@@ -9591,17 +9591,12 @@ enum SelfTest {
         // rather than files, because a second declaration in the SAME file is
         // the easier mistake.
         expect(
-            dpOccurrences("@AppStorage(DiscordPresence.enabledKey)", in: dpSources) == 1
-                && dpSources.first(where: {
-                    $0.text.contains("@AppStorage(DiscordPresence.enabledKey)")
-                })?.name == "SettingsPanel.swift"
+            dpOccurrences("@AppStorage(DiscordPresence.enabledKey)", in: dpSources) == 0
+                && dpOccurrences("@AppStorage(DiscordPresence.wholeDollarsKey)", in: dpSources) == 0
                 && dpOccurrences("\"\(DiscordPresence.enabledKey)\"", in: dpSources) == 1
-                && dpOccurrences("@AppStorage(DiscordPresence.wholeDollarsKey)", in: dpSources) == 1
                 && dpOccurrences("\"\(DiscordPresence.wholeDollarsKey)\"", in: dpSources) == 1,
-            "A2b: each switch is declared by exactly one view, in SettingsPanel, and each key "
-                + "string is written exactly once (mutation: a second `@AppStorage` default, or "
-                + "a hard-coded copy of the key — the trap `tokenbar.limits.enabled` already "
-                + "fell into — fails here)")
+            "A2b: Discord is not bound in Settings; each key string lives only as the constant "
+                + "(BurnBar ships no Discord UI)")
         // The payload layer reads NO defaults domain, asserted at runtime rather
         // than by scanning for `.object(forKey:`. The scan's first draft matched
         // the receiver name and looked straight past

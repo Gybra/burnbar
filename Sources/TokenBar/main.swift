@@ -1,8 +1,12 @@
 import AppKit
+import Darwin
 
 // Entry point. `--smoke` keeps the Phase 1 CLI bridge check available for CI,
 // `--selftest` runs the TokenBarCore logic checks; anything else boots the
 // menu-bar app (no storyboard, no .app bundle yet).
+
+// Fail closed on LiteLLM/OpenRouter even if a future engine path forgets.
+_ = setenv("TOKSCALE_PRICING_CACHE_ONLY", "1", 1)
 
 AppLanguage.prepareDirectRunResources()
 

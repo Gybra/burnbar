@@ -4,14 +4,12 @@ import PackageDescription
 // The Rust staticlib must be built first: `cargo build --release` (or `make`).
 // `swift build` must run from the repo root so the relative -L path resolves.
 let package = Package(
-    name: "TokenBar",
+    name: "BurnBar",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "crosscheck-harness", targets: ["CrossCheckHarness"]),
     ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
-    ],
+    dependencies: [],
     targets: [
         .target(name: "CTB", path: "Sources/CTB"),
         .target(
@@ -23,7 +21,6 @@ let package = Package(
             name: "TokenBar",
             dependencies: [
                 "TokenBarCore",
-                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/TokenBar",
             resources: [
@@ -65,8 +62,6 @@ var rustLinkerSettings: [LinkerSetting] {
         // Rust linkage dynamic with a build-tree absolute path (Codex review
         // finding, verified with otool -L).
         .unsafeFlags(["-Xlinker", "target/release/libtb_core_ffi.a"]),
-        // Sparkle.framework rides in Contents/Frameworks inside the .app.
-        .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
         .linkedFramework("Security"),
         .linkedFramework("SystemConfiguration"),
         .linkedFramework("CoreFoundation"),

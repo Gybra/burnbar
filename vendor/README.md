@@ -1,41 +1,10 @@
-# Shared Rust core pin
+# Vendored tokscale-core
 
-TokenBar consumes the public
-[`Nanako0129/tokscale-core`](https://github.com/Nanako0129/tokscale-core)
-repository as a Git submodule. Consumer integration rules are documented in
-[`docs/knowledge/vendor-tokscale.md`](../docs/knowledge/vendor-tokscale.md).
+Pinned snapshot of [`Nanako0129/tokscale-core`](https://github.com/Nanako0129/tokscale-core)
+at `434b95ff987c638d4f005bd1f625a1d9b9dcdebe`, **copied into this repo**
+(not a live submodule).
 
-| Field | Value |
-|---|---|
-| Path | `vendor/tokscale-core` |
-| Repository | `https://github.com/Nanako0129/tokscale-core.git` |
-| Reviewed pin | `434b95ff987c638d4f005bd1f625a1d9b9dcdebe` |
-| Upstream and local-patch ledger | Immutable [`UPSTREAM.md`](https://github.com/Nanako0129/tokscale-core/blob/434b95ff987c638d4f005bd1f625a1d9b9dcdebe/UPSTREAM.md) |
+BurnBar patch: `load_pricing_for_local_parse` never fetches LiteLLM/OpenRouter.
 
-## Ownership
-
-The shared repository owns parsers, scanning, cache behavior, pricing, and
-aggregation. TokenBar owns the gitlink, root `Cargo.lock`,
-`crates/tb_core_ffi`, `Sources/CTB/include/ctb.h`, Swift code, and application
-build wiring.
-
-Do not edit shared Rust source inside the TokenBar submodule. Land and verify
-engine changes in `tokscale-core`, then advance this pin to the reviewed engine
-commit and run the TokenBar consumer gates.
-
-## Checkout
-
-Clone recursively:
-
-```bash
-git clone --recurse-submodules https://github.com/Nanako0129/TokenBar.git
-```
-
-For an existing checkout:
-
-```bash
-git submodule update --init --recursive
-```
-
-The submodule must be clean and its checked-out `HEAD` must equal the gitlink
-before building or releasing.
+Do not bump this tree without an issue + Grok review. Engine changes belong in
+a dedicated PR that diffs against the pin above.
