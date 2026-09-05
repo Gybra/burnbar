@@ -4154,8 +4154,7 @@ enum SelfTest {
 
         let auto = ClientTray.autoSelection
         for (name, present, enabled, hidden, sel, payload, status, value, showRuntime) in [
-            ("error-only stays configurable", ["antigravity-cli"], Set<String>(), Set<String>(), [String: String](), quotaPayload as AgentUsagePayload?, ClientTray.Status.errorAuto, "—%", false),
-            ("missing explicit stays represented", ["codex"], Set(["codex"]), Set<String>(), ["codex": "missing.v1"], quotaPayload, .missingSelection, "—%", true),
+            ("missing explicit stays represented", ["codex"], Set(["codex"]), Set<String>(), ["codex": "missing.v1"], quotaPayload as AgentUsagePayload?, ClientTray.Status.missingSelection, "—%", true),
             ("hidden is Settings-only suppressed", ["codex"], Set(["codex"]), Set(["codex"]), ["codex": "weekly.v1"], quotaPayload, .suppressed, "35%", false),
             ("Auto error snapshot", ["grok"], Set(["grok"]), Set<String>(), ["grok": auto], quotaPayload, .errorAuto, "—%", true),
             ("explicit last-good error", ["grok"], Set(["grok"]), Set<String>(), ["grok": "billing.weekly.v1"], quotaPayload, .errorExplicit, "1%", true),
@@ -4163,7 +4162,8 @@ enum SelfTest {
         ] as [(String, [String], Set<String>, Set<String>, [String: String], AgentUsagePayload?, ClientTray.Status, String, Bool)] {
             let row = ClientTray.settingsRows(
                 presentClients: present, payload: payload, enabled: enabled, selections: sel,
-                hidden: hidden, orderRaw: "", officialClients: officialClientIDs).first
+                hidden: hidden, orderRaw: "", officialClients: officialClientIDs
+            ).first { $0.clientId == present.first }
             expect(row?.status == status && row?.valueText == value, "tray status: \(name)")
             let items = ClientTray.runtimePresentations(
                 graph: clientGraph, payload: payload, enabled: enabled, selections: sel,
@@ -4295,12 +4295,9 @@ enum SelfTest {
             enabled: [], selections: [:], hidden: [], orderRaw: "",
             officialClients: officialClientIDs)
         expect(
-            errorOnlyRows.count == 1
-                && errorOnlyRows[0].clientId == "antigravity-cli"
-                && errorOnlyRows[0].status == .errorAuto
-                && errorOnlyRows[0].valueText == "—%"
-                && errorOnlyRows[0].options.map(\.tag) == [ClientTray.autoSelection],
-            "error-only quota providers remain configurable while windows are unavailable")
+            !errorOnlyRows.map(\.clientId).contains("antigravity-cli")
+                && Set(errorOnlyRows.map(\.clientId)).isSuperset(of: ["codex", "claude"]),
+            "error-only quota providers stay out of Individual items")
 
         let normalRows = ClientTray.settingsRows(
             presentClients: ["codex", "claude"], payload: quotaPayload,
@@ -4327,11 +4324,13 @@ enum SelfTest {
         let errorAutoRow = ClientTray.settingsRows(
             presentClients: ["grok"], payload: quotaPayload,
             enabled: ["grok"], selections: ["grok": ClientTray.autoSelection], hidden: [],
-            orderRaw: "", officialClients: officialClientIDs).first
+            orderRaw: "", officialClients: officialClientIDs
+        ).first { $0.clientId == "grok" }
         let errorExplicitRow = ClientTray.settingsRows(
             presentClients: ["grok"], payload: quotaPayload,
             enabled: ["grok"], selections: ["grok": "billing.weekly.v1"], hidden: [],
-            orderRaw: "", officialClients: officialClientIDs).first
+            orderRaw: "", officialClients: officialClientIDs
+        ).first { $0.clientId == "grok" }
         expect(
             errorAutoRow?.status == .errorAuto && errorAutoRow?.valueText == "—%"
                 && errorExplicitRow?.status == .errorExplicit
@@ -4352,15 +4351,55 @@ enum SelfTest {
                 && absentExplicitRow?.options.last?.tag == "missing.v1",
             "missing payload keeps an explicit selection represented without exposing its id")
         expect(
-            ClientTray.settingsRows(
+            Set(ClientTray.settingsRows(
                 presentClients: ["claude"], payload: quotaPayload, enabled: ["codex"], selections: [:],
-                hidden: [], orderRaw: "", officialClients: officialClientIDs).map(\.clientId) == ["claude"],
-            "disabled clients disappear when no longer present while capable rows remain")
+                hidden: [], orderRaw: "", officialClients: officialClientIDs).map(\.clientId))
+                == Set(["claude", "codex"]),
+            "live quota vendors stay configurable without being present in the graph")
         expect(
             ClientTray.settingsRows(
                 presentClients: [], payload: nil, enabled: [], selections: [:], hidden: [],
                 orderRaw: "", officialClients: officialClientIDs).isEmpty,
             "Settings uses a fixed empty state when no rows are eligible")
+
+        let liveQuotaJSON = """
+        {"generatedAt":"now","agents":[
+          {"clientId":"codex","source":"oauth","updatedAt":"now",
+           "windows":[{"cardId":"weekly.v1","label":"Weekly","usedPercent":65,"remainingPercent":35}]},
+          {"clientId":"grok","source":"oauth","updatedAt":"now",
+           "windows":[{"cardId":"billing.weekly.v1","label":"Weekly","usedPercent":6,"remainingPercent":94}]},
+          {"clientId":"claude","source":"oauth","updatedAt":"now","windows":[],
+           "error":"Claude OAuth credentials not found."}
+        ]}
+        """
+        let liveQuota = try! JSONDecoder().decode(
+            AgentUsagePayload.self, from: Data(liveQuotaJSON.utf8))
+        let quotaOnlyRows = ClientTray.settingsRows(
+            presentClients: ["pi"], payload: liveQuota, enabled: [], selections: [:],
+            hidden: [], orderRaw: "", officialClients: officialClientIDs)
+        expect(
+            quotaOnlyRows.map(\.clientId) == ["codex", "grok"],
+            "live quota vendors are configurable without local graph presence")
+        expect(
+            !quotaOnlyRows.map(\.clientId).contains("claude")
+                && !quotaOnlyRows.map(\.clientId).contains("pi"),
+            "error-only providers and Pi stay out of Individual items")
+        let piOnlyGraph = try! JSONDecoder().decode(
+            UsagePayload.self,
+            from: Data("""
+            {"meta":{"generatedAt":"now","version":"1","dateRange":{"start":"2026-07-01","end":"2026-07-01"}},
+             "summary":{"totalTokens":0,"totalCost":0,"totalDays":0,"activeDays":0,"averagePerDay":0,
+                        "maxCostInSingleDay":0,"clients":["pi"],"models":[]},
+             "years":[],"contributions":[]}
+            """.utf8))
+        let grokOnlyRuntime = ClientTray.runtimePresentations(
+            graph: piOnlyGraph, payload: liveQuota, enabled: ["grok"], selections: [:],
+            hidden: [], officialClients: officialClientIDs)
+        expect(
+            grokOnlyRuntime.map(\.clientId) == ["grok"]
+                && grokOnlyRuntime.first?.valueText == "94%",
+            "enabled quota-only vendor appears in the menu bar")
+
         let runtimePresentations = ClientTray.runtimePresentations(
             graph: clientGraph, payload: quotaPayload, enabled: ["claude", "codex"],
             selections: ["codex": "weekly.v1"], hidden: ["claude"],

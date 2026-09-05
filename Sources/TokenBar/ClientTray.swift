@@ -292,23 +292,25 @@ enum ClientTray {
         officialClients: Set<String>
     ) -> [SettingsRow] {
         let present = canonicalIDs(presentClients)
-        // Agent presence in the quota payload is the stable capability signal.
-        // A supported provider can temporarily return only an error and zero
-        // windows (for example while its local OAuth client is unavailable);
-        // hiding that row would make first-time configuration impossible during
-        // the outage. The row remains selectable and shows an unavailable value.
-        let quotaCapable = Set(payload?.agents.map(\.clientId) ?? [])
-        let newlyConfigurable = present.filter {
-            quotaCapable.contains(quotaClientID(for: $0)) && officialClients.contains($0)
-        }
+        // A live quota card (windows, no error) is enough. Graph presence is
+        // not: Pi sessions are attributed as `pi`, so Codex/Grok quota would
+        // otherwise never get a tray toggle. Error-only providers stay out.
+        let liveQuota = canonicalIDs(
+            (payload?.agents ?? []).compactMap { agent -> String? in
+                guard agent.accountKey == nil,
+                      agent.error == nil,
+                      !agent.uniqueCardWindows.isEmpty
+                else { return nil }
+                return agent.clientId
+            }
+        ).filter { officialClients.contains($0) }
         // Derived from the ordered `present` array, not by iterating the enabled
         // Set: `orderedClients` returns its input untouched when no tab order is
-        // saved, so hash order would leak into the UI and then visibly reshuffle
-        // once the payload lands and `newlyConfigurable` supplies graph order.
+        // saved, so hash order would leak into the UI.
         let preserved = present.filter {
             enabled.contains($0) && officialClients.contains($0)
         }
-        var ids = newlyConfigurable
+        var ids = liveQuota
         for id in preserved where !ids.contains(id) { ids.append(id) }
         ids = ClientRegistry.orderedClients(ids, orderRaw: orderRaw)
 
@@ -383,38 +385,22 @@ enum ClientTray {
         hidden: Set<String>,
         officialClients: Set<String>
     ) -> [Presentation] {
-        let present = canonicalIDs(graph?.summary.clients ?? [])
-        return present
-            .filter { enabled.contains($0) && officialClients.contains($0) && !hidden.contains($0) }
-            .sorted()
-            .map { clientId in
-                let selection = selections[clientId] ?? autoSelection
-                let resolved = resolveWindow(
-                    payload: payload, clientId: clientId, selection: selection)
-                // Distinguish "this provider has no value right now" from "the
-                // window you picked no longer exists", which needs a Settings
-                // change rather than waiting. The message is fixed text; the raw
-                // cardId is never surfaced.
-                // Primary account only — see `resolveWindow`.
-                let snapshot = payload?.agents
-                    .first { $0.clientId == quotaClientID(for: clientId) && $0.accountKey == nil }
-                let windows = snapshot?.uniqueCardWindows ?? []
-                let selectionIsMissing = selection != autoSelection
-                    && !windows.contains { $0.cardId == selection }
-                let status: Status
-                if selectionIsMissing {
-                    status = .missingSelection
-                } else if snapshot?.error != nil {
-                    status = selection == autoSelection ? .errorAuto : .errorExplicit
-                } else {
-                    status = resolved == nil ? .unavailable : .available
-                }
-                return Presentation(
-                    clientId: clientId,
-                    displayName: ClientRegistry.style(clientId).displayName,
-                    remainingPercent: resolved?.remainingPercent,
-                    status: status)
-            }
+        return settingsRows(
+            presentClients: graph?.summary.clients ?? [],
+            payload: payload,
+            enabled: enabled,
+            selections: selections,
+            hidden: hidden,
+            orderRaw: "",
+            officialClients: officialClients
+        ).compactMap { row in
+            guard row.isEnabled, row.status != .suppressed else { return nil }
+            return Presentation(
+                clientId: row.clientId,
+                displayName: row.displayName,
+                remainingPercent: row.remainingPercent,
+                status: row.status)
+        }
     }
 
     /// One rounding site: every displayed percent, tooltip, and accessibility
