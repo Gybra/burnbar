@@ -3026,6 +3026,8 @@ fn load_codex_credentials_from(auth_path: &Path) -> Result<CodexCredentials, Str
     })
 }
 
+const PI_CHATGPT_SIGN_IN_ERROR: &str = "Pi's Sign in with ChatGPT does not expose quota. In Pi, also run `/login` and choose OpenAI Codex (legacy), or run `codex login`.";
+
 fn load_pi_codex_credentials(
     auth_path: &Path,
     raw_json: &Value,
@@ -3033,12 +3035,19 @@ fn load_pi_codex_credentials(
     if raw_json.get("tokens").is_some() {
         return Ok(None);
     }
-    let Some(entry) = raw_json.get("openai-codex").and_then(Value::as_object) else {
+    let Some(entry) = raw_json
+        .get("openai-codex")
+        .and_then(Value::as_object)
+        .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("oauth"))
+    else {
+        // Pi's Sign in with ChatGPT (`openai`) token is scoped to
+        // api.openai.com/v1 and is rejected by the Codex usage API, so it can
+        // never back this card. Say so instead of "no OAuth tokens".
+        if raw_json.pointer("/openai/type").and_then(Value::as_str) == Some("oauth") {
+            return Err(PI_CHATGPT_SIGN_IN_ERROR.to_string());
+        }
         return Ok(None);
     };
-    if entry.get("type").and_then(Value::as_str) != Some("oauth") {
-        return Ok(None);
-    }
     let access_token = entry
         .get("access")
         .and_then(Value::as_str)
@@ -9365,6 +9374,39 @@ mod tests {
         assert!(
             err.contains("no OAuth tokens"),
             "unexpected error: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pi_chatgpt_sign_in_without_codex_entry_explains_how_to_get_quota() {
+        let dir = std::env::temp_dir().join(format!(
+            "tb_pi_chatgpt_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        fs::write(
+            &path,
+            r#"{"openai":{"type":"oauth","access":"FAKE","refresh":"R","expires":1,"clientId":"c","scopes":["chatgpt.tokens.use.direct"]}}"#,
+        )
+        .unwrap();
+        let err = load_codex_credentials_from(&path).unwrap_err();
+        assert!(
+            err.contains("OpenAI Codex (legacy)") && err.contains("codex login"),
+            "unexpected error: {err}"
+        );
+        // A non-OAuth legacy entry cannot back the card either, so it must not
+        // hide the Sign in with ChatGPT guidance.
+        fs::write(
+            &path,
+            r#"{"openai-codex":{"type":"api_key","key":"FAKE"},"openai":{"type":"oauth","access":"FAKE","refresh":"R","expires":1}}"#,
+        )
+        .unwrap();
+        let err = load_codex_credentials_from(&path).unwrap_err();
+        assert!(
+            err.contains("OpenAI Codex (legacy)"),
+            "unexpected error with an API-key legacy entry: {err}"
         );
         let _ = fs::remove_dir_all(&dir);
     }
