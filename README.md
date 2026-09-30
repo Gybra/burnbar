@@ -60,6 +60,6 @@ MIT. See [LICENSE](LICENSE).
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) before opening a PR. Flow: issue → branch → Grok 4.6
+Read [AGENTS.md](AGENTS.md) before opening a PR. Flow: issue → branch → GPT-6.1 Sol
 review (thinking, effort high, right pane) → PR → CI green → merge → tagged
 release.
