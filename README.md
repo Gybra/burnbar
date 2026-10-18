@@ -8,6 +8,18 @@ Discord, telemetry, or a Homebrew cask that strips Gatekeeper quarantine.
 
 **Requires** Apple Silicon, macOS 14+.
 
+## Why this fork exists: Pi Coding Agent quota handling
+
+This fork was created to address a practical limitation in my daily workflow: I use [Pi Coding Agent](https://pi.dev/) rather than relying exclusively on Codex or other coding harnesses. I needed BurnBar's quota reporting to reflect my actual setup correctly.
+
+The changes in this fork focus on improving quota detection and reporting for that workflow. This is a targeted compatibility improvement, **not a claim that BurnBar is an entirely new application**. The original project and its authors remain credited above and below.
+
+### Why a fork instead of an upstream change first?
+
+The fix was needed immediately for day-to-day use. Opening an issue or pull request upstream would have been a valid path, but review, acceptance, and release timing were unknown. Maintaining a public fork allowed me to implement and use the changes without waiting for that process.
+
+The fork remains publicly available so others with similar requirements can inspect, use, or adapt the changes. An upstream contribution is still possible; maintaining this fork does not rule it out.
+
 ## What it does
 
 - Reads session logs already on disk (Claude Code, Codex, Cursor, OpenCode, …)
